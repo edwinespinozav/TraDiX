@@ -163,7 +163,10 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
         s1 = (times or {}).get("sesiones_a_objetivo_1") or 10
         s2 = (times or {}).get("sesiones_a_objetivo_2") or max(s1 + 5, 18)
         x_end = pd.bdate_range(last_x, periods=int(s2) + 4)[-1]
-        x0 = x[max(0, len(x) - 6)]
+        limit = plan.get("modo_entrada") == "limit"
+        # Entrada a mercado: la caja nace en el cierre actual. Entrada proyectada (Limit): la caja se desplaza
+        # al futuro, a partir de la sesión en que se espera el retroceso al soporte.
+        x0 = pd.bdate_range(last_x, periods=3)[-1] if limit else x[max(0, len(x) - 6)]
         # zonas sombreadas: beneficio (verde) y riesgo (rojo)
         fig.add_shape(type="rect", x0=x0, x1=x_end, y0=e, y1=t2, fillcolor="rgba(34,197,94,0.10)", line_width=0, row=1, col=1)
         fig.add_shape(type="rect", x0=x0, x1=x_end, y0=e, y1=t1, fillcolor="rgba(34,197,94,0.12)", line_width=0, row=1, col=1)
@@ -171,8 +174,20 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
         # zona de compra (±0.3 ATR alrededor de la entrada)
         fig.add_shape(type="rect", x0=x0, x1=x_end, y0=e - 0.3 * atr, y1=e + 0.3 * atr,
                       fillcolor="rgba(96,165,250,0.18)", line=dict(color="rgba(96,165,250,0.5)", width=1), row=1, col=1)
-        fig.add_annotation(x=x0, y=e + 0.3 * atr, xanchor="left", yanchor="bottom", text="" if mobile else "ZONA DE ENTRADA", showarrow=False,
-                           font=dict(size=10, color="#93c5fd"), row=1, col=1)
+        fig.add_annotation(x=x0, y=e + 0.3 * atr, xanchor="left", yanchor="bottom",
+                           text="" if mobile else ("ZONA DE ENTRADA PROYECTADA (LIMIT)" if limit else "ZONA DE ENTRADA (A MERCADO)"),
+                           showarrow=False, font=dict(size=10, color="#93c5fd"), row=1, col=1)
+        if limit:
+            # retroceso esperado: del cierre actual hasta la zona de entrada
+            fig.add_annotation(x=x0, y=e, ax=last_x, ay=last_px, xref="x", yref="y", axref="x", ayref="y",
+                               showarrow=True, arrowhead=2, arrowsize=1.1, arrowwidth=1.4, arrowcolor="#fbbf24",
+                               text="")
+        if plan.get("estado"):
+            wait = plan.get("estado_tipo") == "esperar"
+            fig.add_annotation(xref="paper", yref="paper", x=0.005, y=0.995, xanchor="left", yanchor="top",
+                               text=("⏳ " if wait else "✅ ") + plan["estado"] + ("" if mobile else "  ·  1D · 1–3 meses"),
+                               showarrow=False, font=dict(size=11 if mobile else 12, color="#0b0f17"),
+                               bgcolor="#fbbf24" if wait else "#22c55e", borderpad=4)
         # trayectoria proyectada
         px_path = [last_px] + ([e] if abs(e - last_px) > 0.15 * atr else []) + [t1, t2]
         xs = [last_x] + ([pd.bdate_range(last_x, periods=3)[-1]] if len(px_path) == 4 else [])
@@ -186,7 +201,7 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
         fig.add_annotation(x=xs[-1], y=t2, text=f"TP2 ~{int(s2)} ses.", showarrow=False, yshift=12,
                            font=dict(size=10, color="#86efac"), row=1, col=1)
         # líneas horizontales + etiquetas de precio
-        for y, lbl, c, dash, wdt in ((e, "E" if mobile else "ENTRADA", "#60a5fa", "solid", 1.6),
+        for y, lbl, c, dash, wdt in ((e, ("E" if mobile else ("LIMIT" if limit else "ENTRADA")), "#60a5fa", "dash" if limit else "solid", 1.6),
                                      (sl, "SL" if mobile else "STOP", "#ef4444", "solid", 1.6),
                                      (t1, "TP1", "#22c55e", "dash", 1.3), (t2, "TP2", "#22c55e", "dash", 1.3)):
             fig.add_hline(y=y, line=dict(color=c, width=wdt, dash=dash), row=1, col=1)

@@ -174,7 +174,7 @@ def load_scan():
 
 # ---- Configuración --------------------------------------------------------
 DEFAULT_CFG = {"anthropic_key": "", "alphavantage_key": "", "modelo": "Claude Sonnet 5.5 (rápido)",
-               "proveedor": "Yahoo Finance (gratis)", "capital": 10000.0, "riesgo_pct": 1.0, "tp_atr": 3.0, "sl_atr": 1.5, "horizonte": 20}
+               "proveedor": "Yahoo Finance (gratis)", "capital": 10000.0, "riesgo_pct": 1.0, "tp_atr": 3.0, "sl_atr": 1.5, "horizonte": 35}
 
 
 def config() -> dict:

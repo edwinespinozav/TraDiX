@@ -53,7 +53,9 @@ with st.sidebar:
         c1, c2 = st.columns(2)
         cfg["tp_atr"] = c1.number_input("Objetivo (×ATR)", 1.0, 8.0, float(cfg["tp_atr"]), 0.5)
         cfg["sl_atr"] = c2.number_input("Stop (×ATR)", 0.5, 5.0, float(cfg["sl_atr"]), 0.25)
-        cfg["horizonte"] = st.slider("Horizonte (sesiones)", 5, 60, int(cfg["horizonte"]))
+        cfg["horizonte"] = st.slider("Horizonte (sesiones)", 24, 50, min(50, max(24, int(cfg["horizonte"]))),
+                                     help="Velas diarias (1D): mediano-largo plazo, 1 a 3 meses (24–50 sesiones).")
+        st.caption("Marco temporal: velas 1D · mediano-largo plazo (1–3 meses).")
         if not ADMIN:
             st.caption("Estos ajustes valen para esta sesión.")
     if ADMIN:

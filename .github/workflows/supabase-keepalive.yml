@@ -1,0 +1,34 @@
+# Evita que Supabase pause el proyecto del plan gratuito por inactividad (7 días sin consultas).
+# Hace una lectura real a la base de datos lunes y jueves. Requiere dos secrets del repositorio:
+#   SUPABASE_URL          → https://xxxx.supabase.co
+#   SUPABASE_SERVICE_KEY  → la misma clave que usa la app
+name: Supabase keep-alive
+
+on:
+  schedule:
+    - cron: "17 13 * * 1,4"   # lunes y jueves, 13:17 UTC
+  workflow_dispatch: {}        # permite ejecutarlo a mano desde la pestaña Actions
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Consulta a la tabla profiles
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+            echo "Faltan los secrets SUPABASE_URL o SUPABASE_SERVICE_KEY"; exit 1
+          fi
+          AUTH=()
+          case "$SUPABASE_KEY" in eyJ*) AUTH=(-H "Authorization: Bearer $SUPABASE_KEY");; esac
+          code=$(curl -sS -o /tmp/r.json -w "%{http_code}" --max-time 30 \
+            -H "apikey: $SUPABASE_KEY" "${AUTH[@]}" \
+            "${SUPABASE_URL%/}/rest/v1/profiles?select=email&limit=1")
+          echo "HTTP $code"
+          if [ "$code" != "200" ]; then
+            echo "Supabase no respondió bien (¿proyecto pausado?)"; cat /tmp/r.json; exit 1
+          fi
+          echo "Supabase activo ✅"

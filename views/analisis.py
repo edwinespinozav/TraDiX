@@ -7,6 +7,7 @@ import streamlit as st
 from core import ai, db, store
 from core.analysis import full_analysis
 from core.fundamental import BLOCK_W
+from core.levels import MARCO_CORTO, MARCO_TEMPORAL, MODOS
 from core.ui import (AMBER, DISCLAIMER, GREEN, MUTED, NEUTRAL, RED, SIGNAL_COLORS, color_for, equity_chart, is_mobile,
                      pill, plot_config, price_chart)
 
@@ -68,7 +69,14 @@ except Exception as e:
     st.error(f"No se pudo analizar {ticker}: {e}")
     st.stop()
 
-d, tech, prob, plan, m, fs = A["df"], A["tech"], A["prob"], A["plan"], A["metrics"], A["fscore"]
+d, tech, prob, m, fs = A["df"], A["tech"], A["prob"], A["metrics"], A["fscore"]
+_rec = A["plan"]["modo_recomendado"]
+_opts = {f"Auto · {MODOS[_rec].replace('Entrada ', '')}": "auto", "A mercado": "market", "Proyectada (Limit)": "limit"}
+_mode_lbl = st.segmented_control("Modo de entrada", list(_opts), default=list(_opts)[0], key=f"emode_{ticker}",
+                                 help="Auto elige la entrada proyectada (Limit) en el soporte más cercano cuando el "
+                                      "impulso de corto plazo va en contra (MACD decreciente, pérdida de la EMA9, RSI "
+                                      "agotado o precio extendido); si no, entrada a mercado.") or list(_opts)[0]
+plan = A["planes"][_opts[_mode_lbl]]
 _prof = st.session_state.get("profile") or {}
 _seen = st.session_state.setdefault("_logged_analysis", set())
 if _prof and ticker not in _seen:
@@ -90,7 +98,9 @@ st.markdown(
     f"<span class='qpx'>${last['Close']:,.2f}</span>"
     f"<span style='color:{GREEN if chg >= 0 else RED}' class='qch'>{chg * 100:+.2f}%</span>"
     f"<span class='muted'>{E(m.get('Nombre', ''))} · {E(m.get('Sector', ''))} · {E(m.get('Industria', ''))} · "
-    f"cierre {d.index[-1]:%d-%b-%Y} · rango 52s {money(lo52)} – {money(hi52)}</span></div>", unsafe_allow_html=True)
+    f"cierre {d.index[-1]:%d-%b-%Y} · rango 52s {money(lo52)} – {money(hi52)}</span>"
+    f"<span class='muted small' style='display:block;margin-top:2px'>🕒 {E(MARCO_TEMPORAL)}</span></div>",
+    unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- gráfico + panel vertical
 cc1, cc2, cc3, _ = st.columns([2.2, 1, 1, 3])
@@ -100,7 +110,7 @@ show_vp = cc2.toggle("VRVP", value=True)
 show_bb = cc3.toggle("Bollinger", value=False)
 bars = {"3M": 63, "6M": 126, "1A": 252, "2A": 504}[rng]
 
-akey = f"ai_{ticker}_{d.index[-1]:%Y%m%d}_{cfg['tp_atr']}_{cfg['sl_atr']}"
+akey = f"ai_{ticker}_{d.index[-1]:%Y%m%d}_{cfg['tp_atr']}_{cfg['sl_atr']}_{plan['modo_entrada']}"
 V = st.session_state.get(akey)
 
 from core.technical import volume_profile
@@ -126,6 +136,14 @@ def row(label, val, color="#e5e7eb", sub=""):
 
 
 panel = "<div class='mp'>"
+_wait = plan["estado_tipo"] == "esperar"
+_sc = AMBER if _wait else GREEN
+panel += (f"<div style='border:1px solid {_sc};border-radius:8px;padding:7px 9px;margin-bottom:8px;"
+          f"background:rgba(0,0,0,.18)'><div style='color:{_sc};font-weight:700;font-size:13.5px'>"
+          f"{'⏳ ' if _wait else '✅ '}{E(plan['estado'])}</div>"
+          + (f"<div class='mp-s'>{E(' · '.join(plan['motivos_impulso']))}</div>" if plan["motivos_impulso"] else
+             "<div class='mp-s'>Impulso de corto plazo a favor de la señal de fondo.</div>")
+          + f"<div class='mp-s'>🕒 {E(MARCO_CORTO)}</div></div>")
 panel += "<div class='mp-h'>Puntajes</div>"
 panel += row("Score técnico", f"{ts:+.0f}", col_score(ts))
 panel += row("Score fundamental", "—" if fsc is None else f"{fsc:+.0f}", col_score(fsc))
@@ -135,8 +153,14 @@ panel += row("Prob. de ganancia", f"{p * 100:.1f}%", GREEN if p > be + 0.05 else
 panel += row("Valor esperado", f"{ev:+.2f} R", GREEN if ev > 0.1 else (RED if ev < 0 else NEUTRAL))
 panel += row("Piotroski", f"{pio['score']}/{pio['max']}" if pio else "—",
              (GREEN if pio["score"] >= 7 else RED if pio["score"] <= 3 else NEUTRAL) if pio else MUTED)
-panel += f"<div class='mp-h'>Plan · {E(plan['direccion'])}</div>"
+panel += f"<div class='mp-h'>Plan · {E(plan['direccion'])} · 1D 1–3 meses</div>"
 panel += row("Entrada", money(plan["entrada"]), "#60a5fa", E(plan["tipo_entrada"]))
+if plan["modo_entrada"] == "limit":
+    panel += row("Precio actual", money(plan["entrada_mercado"]), "#e5e7eb",
+                 f"esperar retroceso de {abs(plan['entrada'] / plan['entrada_mercado'] - 1) * 100:.1f}%")
+else:
+    panel += row("Entrada proyectada", money(plan["entrada_proyectada"]), "#93c5fd",
+                 f"alternativa Limit en {E(plan['referencia_proyectada'])}")
 panel += row("Stop-loss", money(plan["stop"]), RED, f"−{risk_pct * 100:.1f}% · {E(plan['tipo_stop'])}")
 panel += row("Objetivo 1", money(plan["objetivo_1"]), GREEN,
              f"R/B {plan['rr_1']:.1f} · {abs(plan['objetivo_1'] / plan['entrada'] - 1) * 100:.1f}%"
