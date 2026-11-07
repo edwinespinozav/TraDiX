@@ -55,3 +55,8 @@ alter table public.profiles     enable row level security;
 alter table public.invitations  enable row level security;
 alter table public.usage_events enable row level security;
 alter table public.watchlist    enable row level security;
+
+-- Perfil de trader y ajustes técnicos (onboarding)
+alter table public.profiles add column if not exists trader_profile     text;   -- day | swing | position | fundamental | crypto
+alter table public.profiles add column if not exists technical_settings text;   -- JSON con medias, RSI, MACD, ADX, Bollinger, Fibonacci
+alter table public.profiles add column if not exists default_tf         text;   -- temporalidad por defecto (mínimo 30m)

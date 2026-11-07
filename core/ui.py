@@ -133,8 +133,12 @@ def _tag(fig, y, text, color, row=1, size=10.5):
 
 def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = None, verdict: dict | None = None,
                 bars: int = 180, times: dict | None = None, show_bb: bool = False, show_vp: bool = True,
-                mobile: bool = False) -> go.Figure:
+                mobile: bool = False, tf: str = "1D", crypto: bool = False, settings: dict | None = None) -> go.Figure:
     import numpy as np
+    from .profiles import ma_color, ma_label
+    from .timeframes import future_index, rangebreaks
+    settings = settings or d.attrs.get("settings")
+    fx = lambda n: future_index(x[-1], n, tf, crypto)  # fecha de la vela n en el futuro
     d = d.tail(bars)
     x = d.index
     fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.018,
@@ -147,8 +151,9 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
     fig.add_trace(go.Candlestick(x=x, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"], name="Precio",
                                  increasing=dict(line=dict(color="#26a69a", width=1), fillcolor="#26a69a"),
                                  decreasing=dict(line=dict(color="#ef5350", width=1), fillcolor="#ef5350")), 1, 1)
-    for col, c, w in (("EMA9", "#facc15", 1.1), ("EMA21", "#ef4444", 1.4), ("SMA50", "#22c55e", 1.6), ("SMA200", "#a855f7", 2.2)):
-        fig.add_trace(go.Scatter(x=x, y=d[col], name=col, line=dict(color=c, width=w), hoverinfo="skip"), 1, 1)
+    for col, w in (("EMA9", 1.1), ("EMA21", 1.4), ("SMA50", 1.6), ("SMA200", 2.2)):
+        fig.add_trace(go.Scatter(x=x, y=d[col], name=ma_label(settings, col), line=dict(color=ma_color(settings, col), width=w),
+                                 hoverinfo="skip"), 1, 1)
     if show_bb:
         fig.add_trace(go.Scatter(x=x, y=d["BB_up"], name="Bollinger", line=dict(color="#64748b", width=0.8, dash="dot"), hoverinfo="skip"), 1, 1)
         fig.add_trace(go.Scatter(x=x, y=d["BB_low"], showlegend=False, line=dict(color="#64748b", width=0.8, dash="dot"),
@@ -156,14 +161,16 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
 
     last_x, last_px = x[-1], float(d["Close"].iloc[-1])
     lo, hi = float(d["Low"].min()), float(d["High"].max())
-    fut = pd.bdate_range(last_x, periods=2)[-1]
     x_end = last_x
     if plan:
         e, sl, t1, t2, atr = plan["entrada"], plan["stop"], plan["objetivo_1"], plan["objetivo_2"], plan["atr"]
         s1 = (times or {}).get("sesiones_a_objetivo_1") or 10
         s2 = (times or {}).get("sesiones_a_objetivo_2") or max(s1 + 5, 18)
-        x_end = pd.bdate_range(last_x, periods=int(s2) + 4)[-1]
-        x0 = x[max(0, len(x) - 6)]
+        x_end = fx(int(s2) + 3)
+        limit = plan.get("modo_entrada") == "limit"
+        # Entrada a mercado: la caja nace en el cierre actual. Entrada proyectada (Limit): la caja se desplaza
+        # al futuro, a partir de la sesión en que se espera el retroceso al soporte.
+        x0 = fx(2) if limit else x[max(0, len(x) - 6)]
         # zonas sombreadas: beneficio (verde) y riesgo (rojo)
         fig.add_shape(type="rect", x0=x0, x1=x_end, y0=e, y1=t2, fillcolor="rgba(34,197,94,0.10)", line_width=0, row=1, col=1)
         fig.add_shape(type="rect", x0=x0, x1=x_end, y0=e, y1=t1, fillcolor="rgba(34,197,94,0.12)", line_width=0, row=1, col=1)
@@ -171,12 +178,24 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
         # zona de compra (±0.3 ATR alrededor de la entrada)
         fig.add_shape(type="rect", x0=x0, x1=x_end, y0=e - 0.3 * atr, y1=e + 0.3 * atr,
                       fillcolor="rgba(96,165,250,0.18)", line=dict(color="rgba(96,165,250,0.5)", width=1), row=1, col=1)
-        fig.add_annotation(x=x0, y=e + 0.3 * atr, xanchor="left", yanchor="bottom", text="" if mobile else "ZONA DE ENTRADA", showarrow=False,
-                           font=dict(size=10, color="#93c5fd"), row=1, col=1)
+        fig.add_annotation(x=x0, y=e + 0.3 * atr, xanchor="left", yanchor="bottom",
+                           text="" if mobile else ("ZONA DE ENTRADA PROYECTADA (LIMIT)" if limit else "ZONA DE ENTRADA (A MERCADO)"),
+                           showarrow=False, font=dict(size=10, color="#93c5fd"), row=1, col=1)
+        if limit:
+            # retroceso esperado: del cierre actual hasta la zona de entrada
+            fig.add_annotation(x=x0, y=e, ax=last_x, ay=last_px, xref="x", yref="y", axref="x", ayref="y",
+                               showarrow=True, arrowhead=2, arrowsize=1.1, arrowwidth=1.4, arrowcolor="#fbbf24",
+                               text="")
+        if plan.get("estado"):
+            wait = plan.get("estado_tipo") == "esperar"
+            fig.add_annotation(xref="paper", yref="paper", x=0.005, y=0.995, xanchor="left", yanchor="top",
+                               text=("⏳ " if wait else "✅ ") + plan["estado"] + ("" if mobile else "  ·  " + plan.get("marco_corto", "")),
+                               showarrow=False, font=dict(size=11 if mobile else 12, color="#0b0f17"),
+                               bgcolor="#fbbf24" if wait else "#22c55e", borderpad=4)
         # trayectoria proyectada
         px_path = [last_px] + ([e] if abs(e - last_px) > 0.15 * atr else []) + [t1, t2]
-        xs = [last_x] + ([pd.bdate_range(last_x, periods=3)[-1]] if len(px_path) == 4 else [])
-        xs += [pd.bdate_range(last_x, periods=int(s1) + 1)[-1], pd.bdate_range(last_x, periods=int(s2) + 1)[-1]]
+        xs = [last_x] + ([fx(2)] if len(px_path) == 4 else [])
+        xs += [fx(int(s1)), fx(int(s2))]
         fig.add_trace(go.Scatter(x=xs, y=px_path, mode="lines+markers", name="Proyección",
                                  line=dict(color="#93c5fd", width=2, dash="dot"),
                                  marker=dict(size=[4] * (len(xs) - 1) + [9], symbol=["circle"] * (len(xs) - 1) + ["triangle-up" if t2 > e else "triangle-down"]),
@@ -186,7 +205,7 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
         fig.add_annotation(x=xs[-1], y=t2, text=f"TP2 ~{int(s2)} ses.", showarrow=False, yshift=12,
                            font=dict(size=10, color="#86efac"), row=1, col=1)
         # líneas horizontales + etiquetas de precio
-        for y, lbl, c, dash, wdt in ((e, "E" if mobile else "ENTRADA", "#60a5fa", "solid", 1.6),
+        for y, lbl, c, dash, wdt in ((e, ("E" if mobile else ("LIMIT" if limit else "ENTRADA")), "#60a5fa", "dash" if limit else "solid", 1.6),
                                      (sl, "SL" if mobile else "STOP", "#ef4444", "solid", 1.6),
                                      (t1, "TP1", "#22c55e", "dash", 1.3), (t2, "TP2", "#22c55e", "dash", 1.3)):
             fig.add_hline(y=y, line=dict(color=c, width=wdt, dash=dash), row=1, col=1)
@@ -223,10 +242,12 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
         _tag(fig, last_px, f"{last_px:,.2f}", "#e5e7eb")
 
     # --- RSI con banda 30-70 ---
-    fig.add_shape(type="rect", xref="x2 domain", x0=0, x1=1, yref="y3", y0=30, y1=70, fillcolor="rgba(167,139,250,0.08)", line_width=0)
+    _ob = float(settings["rsi"]["sobrecompra"]) if settings else 70
+    _os = float(settings["rsi"]["sobreventa"]) if settings else 30
+    fig.add_shape(type="rect", xref="x2 domain", x0=0, x1=1, yref="y3", y0=_os, y1=_ob, fillcolor="rgba(167,139,250,0.08)", line_width=0)
     fig.add_trace(go.Scatter(x=x, y=d["RSI"], name="RSI", line=dict(color="#c084fc", width=1.4), showlegend=False,
                              hovertemplate="RSI %{y:.1f}<extra></extra>"), 2, 1)
-    for y, c in ((70, "rgba(239,68,68,.6)"), (50, "rgba(148,163,184,.35)"), (30, "rgba(34,197,94,.6)")):
+    for y, c in ((_ob, "rgba(239,68,68,.6)"), (50, "rgba(148,163,184,.35)"), (_os, "rgba(34,197,94,.6)")):
         fig.add_hline(y=y, line=dict(color=c, width=1, dash="dot"), row=2, col=1)
     # --- MACD con histograma de 4 tonos ---
     h = d["MACD_hist"].fillna(0)
@@ -240,7 +261,8 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
     fig.add_trace(go.Scatter(x=x, y=d["-DI"], line=dict(color="#ef4444", width=1), showlegend=False, name="−DI"), 4, 1)
     fig.add_trace(go.Scatter(x=x, y=d["ADX"], line=dict(color="#e5e7eb", width=1.6), showlegend=False, name="ADX",
                              fill="tozeroy", fillcolor="rgba(229,231,235,0.05)"), 4, 1)
-    fig.add_hline(y=25, line=dict(color="rgba(148,163,184,.5)", width=1, dash="dot"), row=4, col=1)
+    fig.add_hline(y=float(settings["adx"]["umbral"]) if settings else 25,
+                  line=dict(color="rgba(148,163,184,.5)", width=1, dash="dot"), row=4, col=1)
 
     pad = (hi - lo) * 0.05
     fig.update_layout(template="plotly_dark", paper_bgcolor="#0f141f", plot_bgcolor="#0f141f",
@@ -251,7 +273,7 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
                       legend=dict(orientation="h", y=1.035, x=0, font=dict(size=10), bgcolor="rgba(0,0,0,0)"),
                       font=dict(family="Inter", color=TXT, size=11))
     for r_ in (1, 2, 3, 4):
-        fig.update_xaxes(gridcolor="#1c2433", rangebreaks=[dict(bounds=["sat", "mon"])], showspikes=True, spikecolor="#475569",
+        fig.update_xaxes(gridcolor="#1c2433", rangebreaks=rangebreaks(tf, crypto), showspikes=True, spikecolor="#475569",
                          spikethickness=1, range=[x[0], x_end + pd.Timedelta(days=3)], row=r_, col=1)
     if vp_axis:
         fig.update_layout(xaxis5=vp_axis)
@@ -259,7 +281,11 @@ def price_chart(d: pd.DataFrame, plan: dict | None = None, vp: dict | None = Non
     fig.update_yaxes(range=[lo - pad, hi + pad], row=1, col=1, secondary_y=False)
     fig.update_yaxes(range=[0, float(d["Volume"].max()) * 4], visible=False, row=1, col=1, secondary_y=True)
     fig.update_yaxes(range=[0, 100], tickvals=[30, 50, 70], row=2, col=1)
-    for i, t in ((2, "RSI 14"), (3, "MACD 12·26·9"), (4, "ADX/DMI 14")):
+    _rl = f"RSI {settings['rsi']['periodo']}" if settings else "RSI 14"
+    _ml = (f"MACD {settings['macd']['rapida']}·{settings['macd']['lenta']}·{settings['macd']['senal']}" if settings
+           else "MACD 12·26·9")
+    _al = f"ADX/DMI {settings['adx']['periodo']}" if settings else "ADX/DMI 14"
+    for i, t in ((2, _rl), (3, _ml), (4, _al)):
         fig.add_annotation(xref="paper", x=0.002, xanchor="left", yref=f"y{i + 1 if i > 1 else i} domain", y=0.97,
                            text=t, showarrow=False, font=dict(size=10, color=MUTED))
     return fig

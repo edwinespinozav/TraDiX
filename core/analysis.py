@@ -6,12 +6,17 @@ from . import fundamental as F
 from . import probability as P
 from .levels import trade_plan
 from .technical import compute_all, explain_last, score_series, volume_profile
+from .timeframes import TIMEFRAMES, is_crypto, marco, unidad, validate
 
 
-def full_analysis(ticker: str, tp=3.0, sl=1.5, horizon=20, account=10_000.0, risk_pct=1.0,
-                  av_key: str | None = None, provider: str = "yahoo") -> dict:
-    raw = data.history(ticker, "5y", provider, av_key or "")
-    d = compute_all(raw)
+def full_analysis(ticker: str, tp=3.0, sl=1.5, horizon=None, account=10_000.0, risk_pct=1.0,
+                  av_key: str | None = None, provider: str = "yahoo", tf: str = "1D",
+                  settings: dict | None = None) -> dict:
+    """Análisis completo en la temporalidad `tf` (mínimo 30m) con los ajustes técnicos del usuario."""
+    tf = validate(tf)
+    horizon = int(horizon or TIMEFRAMES[tf]["horizonte"])
+    raw = data.history_tf(ticker, tf, provider, av_key or "")
+    d = compute_all(raw, settings)
     s = score_series(d)
     tech = explain_last(d)
     cur = tech["score"]
@@ -30,13 +35,17 @@ def full_analysis(ticker: str, tp=3.0, sl=1.5, horizon=20, account=10_000.0, ris
         "R_promedio_similares": cs["avg_R"],
         "dias_promedio_salida": cs["dias_prom"],
         "sesiones_tipicas_a_objetivo": cs["dias_obj_mediana"],
-        "parametros": f"Objetivo {tp}×ATR, stop {sl}×ATR, horizonte {horizon} sesiones",
+        "parametros": f"Objetivo {tp}×ATR, stop {sl}×ATR, horizonte {unidad(tf, horizon)} · {marco(tf)}",
+        "horizonte_sesiones": horizon,
     }
     bt = P.backtest_signal(d, s, 40.0, tp, sl, horizon, direction)
 
-    info = data.info(ticker, av_key, provider)
+    try:
+        info = data.info(ticker, av_key, provider)
+    except Exception:
+        info = {}
     fv = {"snapshot": {}, "info": {}, "extras": {}, "ratings": [], "news": [], "signals": []}
-    if not data._demo():
+    if not data._demo() and not is_crypto(ticker):  # Finviz solo cubre acciones de EE.UU.
         try:
             from .finviz import bundle
             fv = bundle(ticker)
@@ -50,12 +59,19 @@ def full_analysis(ticker: str, tp=3.0, sl=1.5, horizon=20, account=10_000.0, ris
     from .finviz import score_items
     fv_items = score_items(fv.get("extras") or {}, horizon)
     fscore = F.score_fundamentals(metrics, fv_items)
-    pio = F.piotroski(*data.statements(ticker))
-    plan = trade_plan(d, direction, sl, tp, account, risk_pct)
+    try:
+        pio = F.piotroski(*data.statements(ticker)) if not is_crypto(ticker) else None
+    except Exception:
+        pio = None
+    # Plan recomendado (auto) y las dos variantes de entrada para el selector de la vista
+    plan = trade_plan(d, direction, sl, tp, account, risk_pct, "auto", tf)
+    planes = {"auto": plan,
+              "market": trade_plan(d, direction, sl, tp, account, risk_pct, "market", tf),
+              "limit": trade_plan(d, direction, sl, tp, account, risk_pct, "limit", tf)}
     news = data.news(ticker, av_key=av_key or "")
     seen = {n["titulo"] for n in news}
     news += [n for n in fv["news"] if n["titulo"] not in seen][: max(0, 12 - len(news))]
     comb = 0.6 * cur + 0.4 * (fscore["score"] if fscore["score"] is not None else 0)
-    return {"ticker": ticker, "df": d, "tech": tech, "prob": prob, "bt": bt, "metrics": metrics,
-            "fscore": fscore, "piotroski": pio, "plan": plan, "news": news, "combinado": comb,
+    return {"ticker": ticker, "tf": tf, "df": d, "tech": tech, "prob": prob, "bt": bt, "metrics": metrics,
+            "fscore": fscore, "piotroski": pio, "plan": plan, "planes": planes, "news": news, "combinado": comb,
             "finviz": fv, "finviz_items": fv_items, "vprofile": volume_profile(d.tail(180))}

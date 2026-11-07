@@ -28,6 +28,16 @@ if "cfg" not in st.session_state:
     st.session_state.cfg = store.config()
 cfg = st.session_state.cfg
 
+# ---- Perfil de trader y ajustes técnicos (onboarding) ----
+from core import profiles as _profiles  # noqa: E402
+
+if "trader_profile" not in st.session_state:
+    _src = cfg if profile.get("email") == "owner@local" else profile
+    st.session_state.trader_profile = _src.get("trader_profile")
+    st.session_state.technical_settings = _profiles.merge_settings(_src.get("technical_settings"))
+    st.session_state.default_tf = _src.get("default_tf") or _profiles.get(_src.get("trader_profile"))["tf"]
+NEEDS_ONBOARDING = not st.session_state.trader_profile or st.session_state.get("onboarding")
+
 st.logo("assets/xstock_wordmark.png", size="large", icon_image="assets/xstock_icon.png")
 
 with st.sidebar:
@@ -43,17 +53,32 @@ _admin = [
     st.Page("views/admin_invitaciones.py", title="Invitaciones", icon=":material/person_add:"),
     st.Page("views/admin_usuarios.py", title="Usuarios y uso", icon=":material/group:"),
 ]
-pages = st.navigation({"XStock": _main, "Administración": _admin} if ADMIN else _main)
+_onb = [st.Page("views/onboarding.py", title="Configurar perfil", icon=":material/tune:", default=True)]
+if NEEDS_ONBOARDING:
+    pages = st.navigation(_onb)
+else:
+    pages = st.navigation({"XStock": _main, "Administración": _admin} if ADMIN else _main)
 
 with st.sidebar:
     st.divider()
+    if not NEEDS_ONBOARDING:
+        _P = _profiles.get(st.session_state.trader_profile)
+        st.markdown(f"<div class='small'>Perfil: <b>{_P['icono']} {_P['nombre']}</b> · {' / '.join(_P['tfs'])}</div>",
+                    unsafe_allow_html=True)
+        if st.button("Cambiar perfil y ajustes técnicos", icon=":material/tune:", use_container_width=True):
+            st.session_state.onboarding = True
+            st.session_state.ob_step = 1
+            st.rerun()
     with st.expander("⚙️ Configuración", expanded=False):
         cfg["capital"] = st.number_input("Capital de la cuenta (USD)", 100.0, 1e8, float(cfg["capital"]), 500.0)
         cfg["riesgo_pct"] = st.number_input("Riesgo por operación (%)", 0.1, 5.0, float(cfg["riesgo_pct"]), 0.1)
         c1, c2 = st.columns(2)
         cfg["tp_atr"] = c1.number_input("Objetivo (×ATR)", 1.0, 8.0, float(cfg["tp_atr"]), 0.5)
         cfg["sl_atr"] = c2.number_input("Stop (×ATR)", 0.5, 5.0, float(cfg["sl_atr"]), 0.25)
-        cfg["horizonte"] = st.slider("Horizonte (sesiones)", 5, 60, int(cfg["horizonte"]))
+        cfg["horizonte"] = st.slider("Horizonte en 1D (sesiones)", 24, 50, min(50, max(24, int(cfg["horizonte"]))),
+                                     help="Velas diarias (1D): mediano-largo plazo, 1 a 3 meses (24–50 sesiones). "
+                                          "Las demás temporalidades usan su horizonte propio (p. ej. 26 velas en 30m).")
+        st.caption("El escáner usa velas 1D. Temporalidad mínima de la app: 30m.")
         if not ADMIN:
             st.caption("Estos ajustes valen para esta sesión.")
     if ADMIN:

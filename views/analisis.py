@@ -7,6 +7,11 @@ import streamlit as st
 from core import ai, db, store
 from core.analysis import full_analysis
 from core.fundamental import BLOCK_W
+import json
+
+from core import profiles, summary
+from core.levels import MODOS
+from core.timeframes import is_crypto, unidad
 from core.ui import (AMBER, DISCLAIMER, GREEN, MUTED, NEUTRAL, RED, SIGNAL_COLORS, color_for, equity_chart, is_mobile,
                      pill, plot_config, price_chart)
 
@@ -16,8 +21,13 @@ MOBILE = is_mobile()
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def _run(ticker, tp, sl, hz, acct, risk, av, prov):
-    return full_analysis(ticker, tp, sl, hz, acct, risk, av or None, prov)
+def _run(ticker, tp, sl, hz, acct, risk, av, prov, tf, settings_json):
+    return full_analysis(ticker, tp, sl, hz, acct, risk, av or None, prov, tf, json.loads(settings_json))
+
+
+PKEY = st.session_state.get("trader_profile")
+PERF = profiles.get(PKEY)
+SETTINGS = profiles.merge_settings(st.session_state.get("technical_settings"))
 
 
 def ok(x):
@@ -53,22 +63,34 @@ def col_score(v, g=15, b=-15):
 
 
 # ---------------------------------------------------------------- barra superior
-c1, c2, c3 = st.columns([5, 1, 1.2])
+c1, ctf, c2, c3 = st.columns([3.6, 2.2, 1, 1.2])
 ticker = c1.text_input("Ticker", st.session_state.get("ticker", "AAPL"), label_visibility="collapsed",
                        placeholder="Ticker, p. ej. NVDA").strip().upper()
+_tfs = PERF["tfs"]
+_tf_def = st.session_state.get("default_tf") if st.session_state.get("default_tf") in _tfs else PERF["tf"]
+TF = ctf.segmented_control("Temporalidad", _tfs, default=_tf_def, key="tf_sel", label_visibility="collapsed") or _tf_def
 c2.button("Analizar", type="primary", use_container_width=True)
 if not ticker:
     st.stop()
 st.session_state.ticker = ticker
 try:
     with st.spinner(f"Analizando {ticker}…"):
-        A = _run(ticker, cfg["tp_atr"], cfg["sl_atr"], int(cfg["horizonte"]), cfg["capital"], cfg["riesgo_pct"],
-                 cfg["alphavantage_key"], "alphavantage" if cfg.get("proveedor", "").startswith("Alpha") else "yahoo")
+        A = _run(ticker, cfg["tp_atr"], cfg["sl_atr"], int(cfg["horizonte"]) if TF == "1D" else None,
+                 cfg["capital"], cfg["riesgo_pct"], cfg["alphavantage_key"],
+                 "alphavantage" if cfg.get("proveedor", "").startswith("Alpha") else "yahoo",
+                 TF, json.dumps(SETTINGS, sort_keys=True))
 except Exception as e:
     st.error(f"No se pudo analizar {ticker}: {e}")
     st.stop()
 
-d, tech, prob, plan, m, fs = A["df"], A["tech"], A["prob"], A["plan"], A["metrics"], A["fscore"]
+d, tech, prob, m, fs = A["df"], A["tech"], A["prob"], A["metrics"], A["fscore"]
+_rec = A["plan"]["modo_recomendado"]
+_opts = {f"Auto · {MODOS[_rec].replace('Entrada ', '')}": "auto", "A mercado": "market", "Proyectada (Limit)": "limit"}
+_mode_lbl = st.segmented_control("Modo de entrada", list(_opts), default=list(_opts)[0], key=f"emode_{ticker}",
+                                 help="Auto elige la entrada proyectada (Limit) en el soporte más cercano cuando el "
+                                      "impulso de corto plazo va en contra (MACD decreciente, pérdida de la EMA9, RSI "
+                                      "agotado o precio extendido); si no, entrada a mercado.") or list(_opts)[0]
+plan = A["planes"][_opts[_mode_lbl]]
 _prof = st.session_state.get("profile") or {}
 _seen = st.session_state.setdefault("_logged_analysis", set())
 if _prof and ticker not in _seen:
@@ -90,22 +112,33 @@ st.markdown(
     f"<span class='qpx'>${last['Close']:,.2f}</span>"
     f"<span style='color:{GREEN if chg >= 0 else RED}' class='qch'>{chg * 100:+.2f}%</span>"
     f"<span class='muted'>{E(m.get('Nombre', ''))} · {E(m.get('Sector', ''))} · {E(m.get('Industria', ''))} · "
-    f"cierre {d.index[-1]:%d-%b-%Y} · rango 52s {money(lo52)} – {money(hi52)}</span></div>", unsafe_allow_html=True)
+    f"cierre {d.index[-1]:%d-%b-%Y} · rango 52s {money(lo52)} – {money(hi52)}</span>"
+    f"<span class='muted small' style='display:block;margin-top:2px'>🕒 {E(plan['marco_temporal'])} · "
+    f"perfil {E(PERF['icono'])} {E(PERF['nombre'])}</span></div>",
+    unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- gráfico + panel vertical
 cc1, cc2, cc3, _ = st.columns([2.2, 1, 1, 3])
-rng = cc1.segmented_control("Rango", ["3M", "6M", "1A", "2A"], default="3M" if MOBILE else "6M",
-                            label_visibility="collapsed") or "6M"
+if TF == "1D":
+    _rngs = {"3M": 63, "6M": 126, "1A": 252, "2A": 504}
+else:
+    _rngs = {"60 velas": 60, "120 velas": 120, "250 velas": 250, "500 velas": 500}
+_rk = list(_rngs)
+rng = cc1.segmented_control("Rango", _rk, default=_rk[0] if MOBILE else _rk[1], key=f"rng_{TF}",
+                            label_visibility="collapsed") or _rk[1]
 show_vp = cc2.toggle("VRVP", value=True)
 show_bb = cc3.toggle("Bollinger", value=False)
-bars = {"3M": 63, "6M": 126, "1A": 252, "2A": 504}[rng]
+bars = _rngs[rng]
 
-akey = f"ai_{ticker}_{d.index[-1]:%Y%m%d}_{cfg['tp_atr']}_{cfg['sl_atr']}"
+akey = f"ai_{ticker}_{d.index[-1]:%Y%m%d}_{cfg['tp_atr']}_{cfg['sl_atr']}_{plan['modo_entrada']}_{TF}"
 V = st.session_state.get(akey)
 
 from core.technical import volume_profile
 _vp = volume_profile(d.tail(bars)) if show_vp else None
-_fig = price_chart(d, plan, _vp, V, bars=bars, times=times, show_bb=show_bb, show_vp=show_vp, mobile=MOBILE)
+_fig = price_chart(d, plan, _vp, V, bars=bars, times=times, show_bb=show_bb, show_vp=show_vp, mobile=MOBILE,
+                   tf=TF, crypto=is_crypto(ticker), settings=SETTINGS)
+st.markdown(summary.html(summary.cards(A, plan, times, PKEY),
+                         f"Resumen ejecutivo · {PERF['icono']} {PERF['nombre']} · {TF}"), unsafe_allow_html=True)
 if MOBILE:
     right = st.container()  # en celular: métricas primero, luego el gráfico
     chart_box = st.container()
@@ -126,6 +159,14 @@ def row(label, val, color="#e5e7eb", sub=""):
 
 
 panel = "<div class='mp'>"
+_wait = plan["estado_tipo"] == "esperar"
+_sc = AMBER if _wait else GREEN
+panel += (f"<div style='border:1px solid {_sc};border-radius:8px;padding:7px 9px;margin-bottom:8px;"
+          f"background:rgba(0,0,0,.18)'><div style='color:{_sc};font-weight:700;font-size:13.5px'>"
+          f"{'⏳ ' if _wait else '✅ '}{E(plan['estado'])}</div>"
+          + (f"<div class='mp-s'>{E(' · '.join(plan['motivos_impulso']))}</div>" if plan["motivos_impulso"] else
+             "<div class='mp-s'>Impulso de corto plazo a favor de la señal de fondo.</div>")
+          + f"<div class='mp-s'>🕒 {E(plan['marco_corto'])}</div></div>")
 panel += "<div class='mp-h'>Puntajes</div>"
 panel += row("Score técnico", f"{ts:+.0f}", col_score(ts))
 panel += row("Score fundamental", "—" if fsc is None else f"{fsc:+.0f}", col_score(fsc))
@@ -135,15 +176,21 @@ panel += row("Prob. de ganancia", f"{p * 100:.1f}%", GREEN if p > be + 0.05 else
 panel += row("Valor esperado", f"{ev:+.2f} R", GREEN if ev > 0.1 else (RED if ev < 0 else NEUTRAL))
 panel += row("Piotroski", f"{pio['score']}/{pio['max']}" if pio else "—",
              (GREEN if pio["score"] >= 7 else RED if pio["score"] <= 3 else NEUTRAL) if pio else MUTED)
-panel += f"<div class='mp-h'>Plan · {E(plan['direccion'])}</div>"
+panel += f"<div class='mp-h'>Plan · {E(plan['direccion'])} · {TF}</div>"
 panel += row("Entrada", money(plan["entrada"]), "#60a5fa", E(plan["tipo_entrada"]))
+if plan["modo_entrada"] == "limit":
+    panel += row("Precio actual", money(plan["entrada_mercado"]), "#e5e7eb",
+                 f"esperar retroceso de {abs(plan['entrada'] / plan['entrada_mercado'] - 1) * 100:.1f}%")
+else:
+    panel += row("Entrada proyectada", money(plan["entrada_proyectada"]), "#93c5fd",
+                 f"alternativa Limit en {E(plan['referencia_proyectada'])}")
 panel += row("Stop-loss", money(plan["stop"]), RED, f"−{risk_pct * 100:.1f}% · {E(plan['tipo_stop'])}")
 panel += row("Objetivo 1", money(plan["objetivo_1"]), GREEN,
              f"R/B {plan['rr_1']:.1f} · {abs(plan['objetivo_1'] / plan['entrada'] - 1) * 100:.1f}%"
-             + (f" · ~{times['sesiones_a_objetivo_1']} ses." if times else ""))
+             + (f" · ~{unidad(TF, times['sesiones_a_objetivo_1'])}" if times else ""))
 panel += row("Objetivo 2", money(plan["objetivo_2"]), GREEN,
              f"R/B {plan['rr_2']:.1f} · {abs(plan['objetivo_2'] / plan['entrada'] - 1) * 100:.1f}%"
-             + (f" · ~{times['sesiones_a_objetivo_2']} ses." if times else ""))
+             + (f" · ~{unidad(TF, times['sesiones_a_objetivo_2'])}" if times else ""))
 panel += row("Tamaño", f"{plan['acciones']} acc.", "#e5e7eb",
              f"capital {money(plan['capital_requerido'])} · riesgo {money(plan['riesgo_monetario'])}")
 panel += "<div class='mp-h'>Niveles</div>"
@@ -283,7 +330,8 @@ with lb:
             for b, v in bl.items()), unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- pestañas de detalle
-t1, t6, t3, t4, t5 = st.tabs(["📈 Técnico", "🔎 Finviz", "🎲 Probabilidad y backtest", "📐 Niveles", "📰 Noticias"])
+_ext = st.expander("Ver análisis extendido · indicadores, Finviz, probabilidad, niveles y noticias", expanded=False)
+t1, t6, t3, t4, t5 = _ext.tabs(["📈 Técnico", "🔎 Finviz", "🎲 Probabilidad y backtest", "📐 Niveles", "📰 Noticias"])
 
 with t1:
     sig = pd.DataFrame(tech["señales"])

@@ -1,7 +1,7 @@
 import plotly.express as px
 import streamlit as st
 
-from core import data, store
+from core import crypto, data, store
 from core.scanner import scan
 from core.ui import (BG, BORDER, DISCLAIMER, GREEN, RED, AMBER, MUTED, NEUTRAL, SIGNAL_COLORS, bias_bar, kpi,
                      is_mobile, kpi_row, opportunity_treemap, plot_config, prob_css, rs_css, signal_css, signed_css)
@@ -17,6 +17,11 @@ st.markdown("<div class='muted'>Ranking por <b>valor esperado</b> y <b>probabili
 @st.cache_data(ttl=3600, show_spinner=False)
 def _universe(name, custom, av_key):
     return data.universe_with_meta(name, custom, av_key)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _crypto_universe(n, criterio):
+    return crypto.universe(n, criterio)
 
 
 def _prices(tickers: tuple):
@@ -37,10 +42,20 @@ def _prices(tickers: tuple):
 with st.container(border=True):
     c1, c2, c3, c4 = st.columns([2.2, 1, 1, 1])
     uni = c1.selectbox("Universo", data.UNIVERSOS, index=0)
-    min_px = c2.number_input("Precio mínimo ($)", 0.0, 1000.0, 5.0, 1.0)
+    IS_CRYPTO = uni == data.CRIPTO_UNIVERSO
+    min_px = c2.number_input("Precio mínimo ($)", 0.0, 1000.0, 0.0 if IS_CRYPTO else 5.0, 1.0, key=f"minpx_{IS_CRYPTO}")
     min_dv = c3.number_input("Volumen $ diario mín. (M)", 0.0, 5000.0, 20.0, 5.0)
     only_up = c4.toggle("Solo sobre SMA200", value=False)
     custom = ""
+    n_cr, crit = 25, "Capitalización de mercado"
+    if IS_CRYPTO:
+        k1, k2 = st.columns([1, 2])
+        n_cr = k1.number_input("Cantidad de criptomonedas", 5, 100, 25, 5,
+                               help="No se escanea todo el mercado cripto: solo las N primeras según el criterio.")
+        crit = k2.selectbox("Criterio de selección (ranking de CoinGecko)", list(crypto.CRITERIOS))
+        st.caption("Fuente: ranking de CoinGecko (sin monedas estables ni tokens envueltos). Los precios diarios se descargan "
+                   "de Yahoo Finance como SÍMBOLO-USD; las monedas que Yahoo no tenga se omiten. "
+                   "Para analizar una en detalle usa el ticker en Análisis, p. ej. BTC-USD.")
     if uni == "Lista personalizada":
         custom = st.text_area("Tickers separados por coma", "AAPL, MSFT, NVDA, AMZN, META, GOOGL, TSLA, AMD")
     if uni.startswith("Finviz"):
@@ -54,8 +69,15 @@ with st.container(border=True):
     run = st.button("🔍  Escanear mercado", type="primary", use_container_width=True)
 
 if run:
-    tickers, umeta = _universe(uni, custom, cfg["alphavantage_key"])
-    with st.status(f"Escaneando {len(tickers)} acciones de «{uni}»…", expanded=True) as status:
+    try:
+        tickers, umeta = (_crypto_universe(int(n_cr), crit) if IS_CRYPTO
+                          else _universe(uni, custom, cfg["alphavantage_key"]))
+    except Exception as e:
+        st.error(f"No se pudo obtener el ranking de CoinGecko: {e}. Intenta de nuevo en un minuto.")
+        st.stop()
+    if IS_CRYPTO:
+        uni = f"Cripto · top {len(tickers)} por {crit.lower()}"
+    with st.status(f"Escaneando {len(tickers)} activos de «{uni}»…", expanded=True) as status:
         prices = _prices(tuple(tickers))
         st.write(f"Precios recibidos: {len(prices)} acciones")
         bar = st.progress(0.0)

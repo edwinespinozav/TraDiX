@@ -147,18 +147,33 @@ def fibonacci(df: pd.DataFrame, lookback: int = 126):
 # --------------------------------------------------------------------------
 # Cálculo completo
 # --------------------------------------------------------------------------
-def compute_all(df: pd.DataFrame) -> pd.DataFrame:
+def wma(s: pd.Series, n: int) -> pd.Series:
+    w = np.arange(1, n + 1, dtype=float)
+    return s.rolling(n, min_periods=n).apply(lambda x: float(np.dot(x, w) / w.sum()), raw=True)
+
+
+def _ma(s: pd.Series, tipo: str, n: int) -> pd.Series:
+    n = max(2, int(n))
+    return ema(s, n) if tipo == "EMA" else (wma(s, n) if tipo == "WMA" else sma(s, n))
+
+
+def compute_all(df: pd.DataFrame, settings: dict | None = None) -> pd.DataFrame:
+    """Calcula todos los indicadores. Con `settings` (ajustes del perfil del usuario) las cuatro
+    medias, el RSI, el MACD, el ADX y Bollinger usan los periodos elegidos; sin ajustes, los clásicos.
+    Las medias se guardan en las ranuras EMA9 / EMA21 / SMA50 / SMA200 (rápida, media, lenta, larga)."""
+    from .profiles import BASE_SETTINGS, MA_SLOTS
+    st_ = settings or BASE_SETTINGS
     df = df.copy()
     c = df["Close"]
-    for n in (20, 50, 200):
-        df[f"SMA{n}"] = sma(c, n)
-    for n in (9, 21):
-        df[f"EMA{n}"] = ema(c, n)
-    df["RSI"] = rsi(c)
-    df["MACD"], df["MACD_signal"], df["MACD_hist"] = macd(c)
+    df["SMA20"] = sma(c, 20)
+    for slot, m in zip(MA_SLOTS, st_["mas"]):
+        df[slot] = _ma(c, m.get("tipo", "EMA"), m.get("periodo", 20))
+    df["RSI"] = rsi(c, int(st_["rsi"]["periodo"]))
+    df["MACD"], df["MACD_signal"], df["MACD_hist"] = macd(c, int(st_["macd"]["rapida"]), int(st_["macd"]["lenta"]),
+                                                           int(st_["macd"]["senal"]))
     df["ATR"] = atr(df)
-    df["ADX"], df["+DI"], df["-DI"] = adx(df)
-    df["BB_up"], df["BB_mid"], df["BB_low"] = bollinger(c)
+    df["ADX"], df["+DI"], df["-DI"] = adx(df, int(st_["adx"]["periodo"]))
+    df["BB_up"], df["BB_mid"], df["BB_low"] = bollinger(c, int(st_["bollinger"]["periodo"]), float(st_["bollinger"]["desv"]))
     df["STOCH_K"], df["STOCH_D"] = stochastic(df)
     df["OBV"] = obv(df)
     df["OBV_EMA"] = ema(df["OBV"], 20)
@@ -166,6 +181,7 @@ def compute_all(df: pd.DataFrame) -> pd.DataFrame:
     df["VWAP20"] = rolling_vwap(df)
     df["VOL_SMA20"] = sma(df["Volume"], 20)
     df["TENKAN"], df["KIJUN"], df["SPAN_A"], df["SPAN_B"] = ichimoku(df)
+    df.attrs["settings"] = st_
     return df
 
 

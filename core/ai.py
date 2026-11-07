@@ -34,6 +34,13 @@ Reglas de análisis:
   2×ATR), y qué hacer si se acerca el reporte de resultados.
 - Señales de cambio: qué cambios en las métricas (RSI, MACD, cierre bajo EMA21/SMA50/POC, volumen, short float, revisiones de EPS,
   rating de analistas) cambiarían el pronóstico y qué acción tomar en cada caso.
+- Marco temporal: el plan, la probabilidad y los objetivos corresponden a la temporalidad de las velas indicada en
+  "marco_temporal" (p. ej. velas 1D = mediano-largo plazo, 1 a 3 meses / 24-50 sesiones; velas 30m = intradía).
+  Dilo explícitamente en el resumen ejecutivo y expresa los tiempos en esas unidades (velas/sesiones).
+- Validación de impulso: si "plan_propuesto.estado_tipo" es "esperar" (la señal de fondo es favorable pero el corto plazo
+  corrige: MACD decreciente, pérdida de la EMA9, RSI agotado o precio extendido), NO recomiendes entrar a precio de mercado.
+  Usa veredicto "ESPERAR", indica textualmente el "plan_propuesto.estado" (p. ej. "Esperar Pullback a Soporte ($XX.XX)")
+  y pon como "entrada" la "entrada_proyectada" (orden límite en el soporte), no el precio actual.
 - Si la evidencia es contradictoria o débil, recomienda ESPERAR. Relación riesgo/beneficio mínima aceptable 1.5.
 - Español claro y profesional, frases cortas.
 
@@ -92,6 +99,7 @@ def build_payload(ticker, tech, fund_metrics, fund_score, pio, prob, bt, plan, n
     vp = vprofile or {}
     return _clean({
         "ticker": ticker,
+        "marco_temporal": plan.get("marco_temporal"),
         "precio_actual": plan.get("precio"),
         "contexto_precio": last or {},
         "tecnico": {"score": tech["score"], "señales": tech["señales"]},
@@ -144,6 +152,10 @@ def rule_based(payload: dict) -> dict:
     sgn = 1 if plan["direccion"].startswith("COMPRA") else -1
     comb = 0.6 * t + 0.4 * (f if f is not None else 0)
     v = "COMPRAR" if (ev > 0.2 and comb > 20) else ("EVITAR" if (comb < -30 and ev < 0) else "ESPERAR")
+    wait = plan.get("estado_tipo") == "esperar"
+    if wait and v == "COMPRAR":
+        v = "ESPERAR"  # regla de impulso: no entrar a mercado durante la corrección de corto plazo
+    entrada_rec = plan.get("entrada_proyectada", plan["entrada"]) if wait else plan["entrada"]
     sig = payload["tecnico"]["señales"]
     favor = [s["Indicador"] + ": " + s["Lectura"] for s in sig if s["Señal"] * sgn > 0.3][:4]
     contra = [s["Indicador"] + ": " + s["Lectura"] for s in sig if s["Señal"] * sgn < -0.3][:4]
@@ -160,7 +172,9 @@ def rule_based(payload: dict) -> dict:
         "veredicto": v,
         "confianza": int(min(90, abs(comb) * 0.6 + abs(ev) * 30)),
         "probabilidad_ajustada": p,
-        "resumen_ejecutivo": f"Puntaje combinado {comb:.0f}/100 (técnico {t:.0f}, fundamental "
+        "resumen_ejecutivo": (f"{plan.get('estado')}: " if wait else "") +
+                             f"{plan.get('marco_temporal', 'Velas 1D')}. " +
+                             f"Puntaje combinado {comb:.0f}/100 (técnico {t:.0f}, fundamental "
                              f"{f if f is not None else 'n/d'}). Configuraciones similares alcanzaron el objetivo antes que "
                              f"el stop {p*100:.0f}% de las veces (valor esperado {ev:+.2f}R).",
         "lectura_tecnica": ("A favor: " + "; ".join(favor) + ". " if favor else "") +
@@ -177,7 +191,7 @@ def rule_based(payload: dict) -> dict:
             {"plazo": "Largo (6-12 meses)", "bajista": None, "base": tgt, "alcista": None, "probabilidad_base": None,
              "tiempo_estimado": "6-12 meses", "fundamento": "Precio objetivo medio de analistas"},
         ],
-        "entrada": plan["entrada"], "stop": plan["stop"],
+        "entrada": entrada_rec, "stop": plan["stop"],
         "objetivo_1": plan["objetivo_1"], "objetivo_2": plan["objetivo_2"],
         "tiempo_objetivo_1": f"≈{s1} sesiones" if s1 else "n/d",
         "tiempo_objetivo_2": f"≈{s2} sesiones" if s2 else "n/d",

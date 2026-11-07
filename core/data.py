@@ -32,8 +32,10 @@ FALLBACK_LARGE_CAPS = sorted(set(DOW30 + [
 
 from .finviz import UNIVERSOS_FINVIZ
 
+CRIPTO_UNIVERSO = "Cripto (ranking CoinGecko)"
 UNIVERSOS = (["S&P 500", "Nasdaq 100", "Dow 30", "S&P 500 + Nasdaq 100"] + list(UNIVERSOS_FINVIZ)
-             + ["Todo NYSE + NASDAQ (filtrado por liquidez)", "Movers del día (Alpha Vantage)", "Lista personalizada"])
+             + ["Todo NYSE + NASDAQ (filtrado por liquidez)", "Movers del día (Alpha Vantage)", "Lista personalizada",
+                CRIPTO_UNIVERSO])
 
 
 def _demo() -> bool:
@@ -186,6 +188,56 @@ def history(ticker: str, period: str = "3y", provider: str = "yahoo", av_key: st
         raise ValueError(f"Sin datos para {ticker}")
     df.index = pd.to_datetime(df.index).tz_localize(None)
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+
+
+def _synthetic_tf(ticker: str, tf: str, n: int = 600) -> pd.DataFrame:
+    """Datos sintéticos (modo demo) con el índice de tiempo de la temporalidad pedida."""
+    from .timeframes import is_crypto
+    df = _synthetic(ticker + tf, n)
+    end = pd.Timestamp.today().normalize() + pd.Timedelta(hours=15, minutes=30)
+    if tf in ("30m", "1h", "4h"):
+        step = {"30m": "30min", "1h": "60min", "4h": "240min"}[tf]
+        if is_crypto(ticker):
+            idx = pd.date_range(end=end, periods=n, freq=step)
+        else:
+            per_day = {"30m": 13, "1h": 7, "4h": 2}[tf]
+            days = pd.bdate_range(end=end.normalize(), periods=n // per_day + 2)
+            stamps = [d + pd.Timedelta(hours=9, minutes=30) + i * pd.Timedelta(step) for d in days for i in range(per_day)]
+            idx = pd.DatetimeIndex(stamps[-n:])
+    elif tf == "1W":
+        idx = pd.date_range(end=end.normalize(), periods=n, freq="W-FRI")
+    elif tf == "1M":
+        idx = pd.date_range(end=end.normalize(), periods=min(n, 240), freq="ME")
+        df = df.tail(len(idx))
+    else:
+        idx = (pd.date_range(end=end.normalize(), periods=n, freq="D") if is_crypto(ticker)
+               else pd.bdate_range(end=end.normalize(), periods=n))
+    df.index = idx
+    return df
+
+
+def history_tf(ticker: str, tf: str = "1D", provider: str = "yahoo", av_key: str = "") -> pd.DataFrame:
+    """Historial OHLCV en la temporalidad pedida. Mínimo 30m: 1m/5m/15m no se solicitan nunca."""
+    from .timeframes import TIMEFRAMES, validate
+    tf = validate(tf)
+    if tf == "1D":
+        return history(ticker, "5y", provider, av_key)
+    if _demo():
+        return _synthetic_tf(ticker, tf)
+    spec = TIMEFRAMES[tf]
+    import yfinance as yf
+    df = yf.Ticker(ticker).history(period=spec["period"], interval=spec["yf"], auto_adjust=True)
+    if df.empty:
+        raise ValueError(f"Sin datos {tf} para {ticker}")
+    idx = pd.to_datetime(df.index)
+    if idx.tz is not None:
+        idx = idx.tz_convert("America/New_York").tz_localize(None)
+    df.index = idx
+    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    if spec["resample"]:
+        df = df.resample(spec["resample"], origin="start_day", offset="9h30min").agg(
+            {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
+    return df
 
 
 def batch_history(tickers: list[str], period: str = "2y", chunk: int = 100,

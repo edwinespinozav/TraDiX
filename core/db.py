@@ -93,7 +93,7 @@ class _SQLite:
         email TEXT PRIMARY KEY, name TEXT, role TEXT DEFAULT 'user', status TEXT DEFAULT 'active',
         plan TEXT DEFAULT 'beta', ai_quota INTEGER DEFAULT 10, ai_used INTEGER DEFAULT 0,
         invite_code TEXT, auth_provider TEXT, created_at TEXT, last_login TEXT, login_count INTEGER DEFAULT 0,
-        notes TEXT, password_hash TEXT);
+        notes TEXT, password_hash TEXT, trader_profile TEXT, technical_settings TEXT, default_tf TEXT);
     CREATE TABLE IF NOT EXISTS invitations (
         code TEXT PRIMARY KEY, email TEXT, ai_quota INTEGER DEFAULT 10, max_uses INTEGER DEFAULT 1,
         uses INTEGER DEFAULT 0, expires_at TEXT, created_by TEXT, created_at TEXT, note TEXT,
@@ -108,6 +108,10 @@ class _SQLite:
         self.path = path
         with self._c() as c:
             c.executescript(self.SCHEMA)
+            cols = {r[1] for r in c.execute("PRAGMA table_info(profiles)")}
+            for col in ("trader_profile", "technical_settings", "default_tf"):  # bases locales antiguas
+                if col not in cols:
+                    c.execute(f"ALTER TABLE profiles ADD COLUMN {col} TEXT")
 
     def _c(self):
         c = sqlite3.connect(self.path, timeout=10)
@@ -201,6 +205,12 @@ def create_profile(email: str, name: str, role: str = "user", ai_quota: int = 10
 
 def update_profile(email: str, **fields) -> None:
     backend().update("profiles", {"email": _norm(email)}, fields)
+
+
+def save_trader_profile(email: str, trader_profile: str, settings: dict, default_tf: str) -> None:
+    """Guarda el perfil de trader elegido en el onboarding y sus ajustes técnicos (JSON)."""
+    update_profile(email, trader_profile=trader_profile, technical_settings=json.dumps(settings),
+                   default_tf=default_tf)
 
 
 def delete_profile(email: str, purge_events: bool = True) -> None:
